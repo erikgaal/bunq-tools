@@ -8,9 +8,11 @@ use App\Models\ImportPayment as PaymentModel;
 use bunq\Model\Generated\Endpoint\Payment;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
+use Illuminate\Support\Collection;
 use Illuminate\Support\LazyCollection;
 use Laravel\Prompts\Progress;
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\progress;
 use function Laravel\Prompts\select;
 use function Laravel\Prompts\spin;
@@ -28,43 +30,49 @@ class ImportPayments extends Command implements PromptsForMissingInput
      */
     public function handle(): int
     {
-        $account = $this->selectAccount();
+        $accounts = $this->selectAccounts();
 
-        spin(function () use ($account, &$newImportedPayments) {
-            $lastImportedPayment = $account->importPayments()->latest()->first();
-
-            $newImportedPayments = LazyCollection::make(fn () => FetchAll::execute(fn (array $params) => Payment::listing($account->getKey(), $params), reversed: true))
-                ->map(function (Payment $payment) use ($account) {
-                    return new PaymentModel([
-                        'id' => $payment->getId(),
-                        'original_json' => json_encode($payment),
-                        'original' => serialize($payment),
-                        'monetary_account_id' => $account->getKey(),
-                        'created_at' => $payment->getCreated(),
-                    ]);
-                })
-                ->takeWhile(fn (PaymentModel $importPayment) => ! $lastImportedPayment || $importPayment->created_at->greaterThan($lastImportedPayment->created_at));
-
-            $newImportedPayments
-                ->chunk(200)
-                ->each(function (LazyCollection $chunk) {
-                    PaymentModel::query()->upsert(
-                        $chunk->toArray(),
-                        uniqueBy: ['id'],
-                    );
-                });
-
-            return $newImportedPayments;
-        }, "Fetching transactions for [{$account->description}]...");
-
-        $newImportedPayments->isNotEmpty()
-            ? info("Successfully imported {$newImportedPayments->count()} new payments.")
-            : warning('No new payments to import!');
+        foreach ($accounts as $account) {
+            spin(fn () => $this->importPayments($account), "Importing payments for [{$account->description}]...");
+        }
 
         return self::SUCCESS;
     }
 
-    private function selectAccount(): MonetaryAccountModel
+    private function importPayments(MonetaryAccountModel $account): void
+    {
+        $lastImportedPayment = $account->importPayments()->latest()->first();
+
+        $newImportedPayments = LazyCollection::make(fn () => FetchAll::execute(fn (array $params) => Payment::listing($account->getKey(), $params), reversed: true))
+            ->map(function (Payment $payment) use ($account) {
+                return new PaymentModel([
+                    'id' => $payment->getId(),
+                    'original_json' => json_encode($payment),
+                    'original' => serialize($payment),
+                    'monetary_account_id' => $account->getKey(),
+                    'created_at' => $payment->getCreated(),
+                ]);
+            })
+            ->takeWhile(fn (PaymentModel $importPayment) => ! $lastImportedPayment || $importPayment->created_at->greaterThan($lastImportedPayment->created_at));
+
+        $newImportedPayments
+            ->chunk(200)
+            ->each(function (LazyCollection $chunk) {
+                PaymentModel::query()->upsert(
+                    $chunk->toArray(),
+                    uniqueBy: ['id'],
+                );
+            });
+
+        $newImportedPayments->isNotEmpty()
+            ? info("[$account->description] Successfully imported {$newImportedPayments->count()} new payments.")
+            : warning("[$account->description] No new payments to import!");
+    }
+
+    /**
+     * @return Collection<MonetaryAccountModel>
+     */
+    private function selectAccounts(): Collection
     {
         $accounts = MonetaryAccountModel::query()
             ->orderByDesc('active')
@@ -72,8 +80,8 @@ class ImportPayments extends Command implements PromptsForMissingInput
             ->withCasts(['import_payments_max_created_at' => 'datetime'])
             ->get();
 
-        $selectedAccount = select(
-            'Choose the account',
+        $selectedAccounts = multiselect(
+            'Choose the accounts',
             $accounts->mapWithKeys(fn (MonetaryAccountModel $account) => [$account->getKey() => collect([
                 $account->description,
                 "[$account->iban]",
@@ -82,6 +90,6 @@ class ImportPayments extends Command implements PromptsForMissingInput
             ])->filter()->implode(' ')])
         );
 
-        return $accounts->find($selectedAccount);
+        return MonetaryAccountModel::findMany($selectedAccounts);
     }
 }
