@@ -33,8 +33,10 @@ class ImportPayments extends Command implements PromptsForMissingInput
         $accounts = $this->selectAccounts();
 
         foreach ($accounts as $account) {
-            spin(fn () => $this->importPayments($account), "Importing payments for [{$account->description}]...");
+            $this->components->task($account->description, fn () => $this->importPayments($account));
         }
+
+        $this->newLine();
 
         return self::SUCCESS;
     }
@@ -63,10 +65,6 @@ class ImportPayments extends Command implements PromptsForMissingInput
                     uniqueBy: ['id'],
                 );
             });
-
-        $newImportedPayments->isNotEmpty()
-            ? info("[$account->description] Successfully imported {$newImportedPayments->count()} new payments.")
-            : warning("[$account->description] No new payments to import!");
     }
 
     /**
@@ -78,6 +76,7 @@ class ImportPayments extends Command implements PromptsForMissingInput
             ->orderByDesc('active')
             ->withMax('importPayments', 'created_at')
             ->withCasts(['import_payments_max_created_at' => 'datetime'])
+            ->orderByDesc('import_payments_max_created_at')
             ->get();
 
         $selectedAccounts = multiselect(

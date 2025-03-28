@@ -18,19 +18,30 @@ class ExportPaymentsCommand extends Command
 
     public function handle(): int
     {
-        progress('Exporting accounts...', MonetaryAccount::all(), function (MonetaryAccount $account) {
-            $firstPayment = $account->importPayments()->first();
-            $lastPayment = $account->importPayments()->latest()->first();
+        $this->info('Exporting account payments...');
 
-            if (! $firstPayment || ! $lastPayment) {
-                return;
-            }
+        foreach (MonetaryAccount::all() as $account) {
+            $this->components->task($account->description, fn () => $this->exportPaymentsForAccount($account));
+        }
 
-            foreach (range($firstPayment->created_at->year, $lastPayment->created_at->year) as $year) {
-                (new AccountPaymentsExport($account, $year))->store('bunq/'.AccountPaymentsExport::fileName($account, $year));
-            }
-        });
+        $this->newLine();
 
         return self::SUCCESS;
+    }
+
+    private function exportPaymentsForAccount(MonetaryAccount $account): void
+    {
+        $firstPayment = $account->importPayments()->first();
+        $lastPayment = $account->importPayments()->latest()->first();
+
+        if (!$firstPayment || !$lastPayment) {
+            return;
+        }
+
+        foreach (range($firstPayment->created_at->year, $lastPayment->created_at->year) as $year) {
+            (new AccountPaymentsExport($account, $year))->store(
+                'bunq/' . AccountPaymentsExport::fileName($account, $year)
+            );
+        }
     }
 }
